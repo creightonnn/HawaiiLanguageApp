@@ -1,8 +1,12 @@
-import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { corsHeaders } from "../_shared/cors.ts";
+import { createClient } from "npm:@supabase/supabase-js@2";
 
-serve(async (req: Request) => {
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+};
+
+Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
@@ -24,9 +28,7 @@ serve(async (req: Request) => {
         .order("island", { ascending: true })
         .order("name_hawaiian", { ascending: true });
 
-      if (island) {
-        builder = builder.eq("island", island);
-      }
+      if (island) builder = builder.eq("island", island);
 
       const { data, error } = await builder;
       if (error) throw error;
@@ -36,8 +38,7 @@ serve(async (req: Request) => {
       });
     }
 
-    // Full-text search using the generated fts column
-    // We use textSearch for ranked results, then fall back to ilike for partial matches
+    // Full-text search with prefix matching
     const tsQuery = query
       .trim()
       .split(/\s+/)
@@ -50,22 +51,19 @@ serve(async (req: Request) => {
       .eq("verified", true)
       .textSearch("fts", tsQuery, { type: "websearch", config: "english" });
 
-    if (island) {
-      builder = builder.eq("island", island);
-    }
+    if (island) builder = builder.eq("island", island);
 
     const { data: ftsResults, error: ftsError } = await builder;
     if (ftsError) throw ftsError;
 
-    // If full-text search returned nothing, fall back to case-insensitive partial match
     if (ftsResults && ftsResults.length > 0) {
       return new Response(JSON.stringify({ results: ftsResults }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    // Fallback: ilike across key text fields
-    let fallbackBuilder = supabase
+    // Fallback: ilike partial match
+    let fallback = supabase
       .from("place_names")
       .select("*")
       .eq("verified", true)
@@ -77,11 +75,9 @@ serve(async (req: Request) => {
       )
       .order("name_hawaiian", { ascending: true });
 
-    if (island) {
-      fallbackBuilder = fallbackBuilder.eq("island", island);
-    }
+    if (island) fallback = fallback.eq("island", island);
 
-    const { data: fallbackResults, error: fallbackError } = await fallbackBuilder;
+    const { data: fallbackResults, error: fallbackError } = await fallback;
     if (fallbackError) throw fallbackError;
 
     return new Response(JSON.stringify({ results: fallbackResults ?? [] }), {
