@@ -39,17 +39,12 @@ Deno.serve(async (req: Request) => {
     }
 
     // Full-text search with prefix matching
-    const tsQuery = query
-      .trim()
-      .split(/\s+/)
-      .map((w: string) => w + ":*")
-      .join(" & ");
-
+    // Use websearch type which handles the query string safely
     let builder = supabase
       .from("place_names")
       .select("*")
       .eq("verified", true)
-      .textSearch("fts", tsQuery, { type: "websearch", config: "english" });
+      .textSearch("fts", query.trim(), { type: "websearch", config: "english" });
 
     if (island) builder = builder.eq("island", island);
 

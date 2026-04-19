@@ -1,11 +1,15 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
-import Anthropic from "npm:@anthropic-ai/sdk@0.27.3";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
 };
+
+// Key is read from env secret when available, falls back to build-time value for demo
+const GROQ_API_KEY = Deno.env.get("GROQ_API_KEY") ?? "";
+
+const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 
 const SYSTEM_PROMPT_TEMPLATE = `You are a knowledgeable and culturally respectful guide to Hawaiian place names.
 You ONLY answer questions using the provided context below. If the answer is not in the context, say: "I don't have information on that yet, but our team is always adding new entries."
@@ -66,9 +70,6 @@ Deno.serve(async (req: Request) => {
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
-    const anthropic = new Anthropic({
-      apiKey: Deno.env.get("ANTHROPIC_API_KEY")!,
-    });
 
     // 1. Ensure session exists
     await supabase
@@ -124,20 +125,39 @@ Deno.serve(async (req: Request) => {
       .order("created_at", { ascending: true })
       .limit(10);
 
-    const priorMessages: { role: "user" | "assistant"; content: string }[] =
-      (history ?? []).map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+    const priorMessages = (history ?? []).map((m) => ({
+      role: m.role as "user" | "assistant",
+      content: m.content,
+    }));
 
-    // 5. Call Claude
-    const response = await anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 1024,
-      system: systemPrompt,
-      messages: [...priorMessages, { role: "user", content: message.trim() }],
+    // 5. Call Groq (OpenAI-compatible)
+    const groqRes = await fetch(GROQ_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${GROQ_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "llama-3.3-70b-versatile",
+        messages: [
+          { role: "system", content: systemPrompt },
+          ...priorMessages,
+          { role: "user", content: message.trim() },
+        ],
+        max_tokens: 1024,
+        temperature: 0.4,
+      }),
     });
 
-    const assistantContent = response.content[0];
-    if (assistantContent.type !== "text") throw new Error("Unexpected response type from Claude API");
-    const assistantMessage = assistantContent.text;
+    if (!groqRes.ok) {
+      const errText = await groqRes.text();
+      throw new Error(`Groq API error ${groqRes.status}: ${errText}`);
+    }
+
+    const groqData = await groqRes.json();
+    const assistantMessage: string =
+      groqData.choices?.[0]?.message?.content ??
+      "I'm sorry, I wasn't able to generate a response. Please try again.";
 
     // 6. Persist both turns
     await supabase.from("chat_messages").insert([
